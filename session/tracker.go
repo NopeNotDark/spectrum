@@ -32,7 +32,6 @@ func newTracker() *tracker {
 
 func (t *tracker) handlePacket(pk packet.Packet) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	switch pk := pk.(type) {
 	case *packet.AddActor:
 		t.entities.Add(pk.EntityUniqueID)
@@ -65,6 +64,7 @@ func (t *tracker) handlePacket(pk packet.Packet) {
 	case *packet.SetDisplayObjective:
 		t.scoreboards.Add(pk.ObjectiveName)
 	}
+	t.mu.Unlock()
 }
 
 func (t *tracker) clearBossBars(s *Session) {

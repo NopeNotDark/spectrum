@@ -44,10 +44,12 @@ loop:
 			continue loop
 		}
 
+		proc := s.Processor()
+
 		switch pk := pk.(type) {
 		case *spectrumpacket.Flush:
 			ctx := NewContext()
-			s.Processor().ProcessFlush(ctx)
+			proc.ProcessFlush(ctx)
 			if ctx.Cancelled() {
 				continue loop
 			}
@@ -69,14 +71,14 @@ loop:
 			s.Disconnect(pk.Message)
 			break loop
 		case packet.Packet:
-			if err := handleServerPacket(s, pk); err != nil {
+			if err := handleServerPacket(s, proc, pk); err != nil {
 				s.CloseWithError(fmt.Errorf("failed to write packet to client: %w", err))
 				logError(s, "failed to write packet to client", err)
 				break loop
 			}
 		case []byte:
 			ctx := NewContext()
-			s.Processor().ProcessServerEncoded(ctx, &pk)
+			proc.ProcessServerEncoded(ctx, &pk)
 			if ctx.Cancelled() {
 				continue loop
 			}
@@ -123,7 +125,8 @@ loop:
 			break loop
 		}
 
-		if err := handleClientPacket(s, header, pool, shieldID, clientDecode, payload); err != nil {
+		proc := s.Processor()
+		if err := handleClientPacket(s, proc, header, pool, shieldID, clientDecode, payload); err != nil {
 			s.Server().CloseWithError(fmt.Errorf("failed to write packet to server: %w", err))
 		}
 	}
@@ -142,7 +145,8 @@ loop:
 			s.CloseWithError(context.Cause(s.ctx))
 			break loop
 		case <-ticker.C:
-			if err := s.Server().WritePacket(&spectrumpacket.Latency{Latency: s.client.Latency().Milliseconds() * 2, Timestamp: time.Now().UnixMilli()}); err != nil {
+			latency := s.client.Latency().Milliseconds() * 2
+			if err := s.Server().WritePacket(&spectrumpacket.Latency{Latency: latency, Timestamp: time.Now().UnixMilli()}); err != nil {
 				logError(s, "failed to write latency packet", err)
 			}
 		}
@@ -150,9 +154,9 @@ loop:
 }
 
 // handleServerPacket processes and forwards the provided packet from the server to the client.
-func handleServerPacket(s *Session, pk packet.Packet) (err error) {
+func handleServerPacket(s *Session, proc Processor, pk packet.Packet) (err error) {
 	ctx := NewContext()
-	s.Processor().ProcessServer(ctx, &pk)
+	proc.ProcessServer(ctx, &pk)
 	if ctx.Cancelled() {
 		return
 	}
@@ -168,62 +172,77 @@ func handleServerPacket(s *Session, pk packet.Packet) (err error) {
 }
 
 // handleClientPacket processes and forwards the provided packet from the client to the server.
-func handleClientPacket(s *Session, header *packet.Header, pool packet.Pool, shieldID int32, clientDecode map[uint32]struct{}, payload []byte) (err error) {
+func handleClientPacket(s *Session, proc Processor, header *packet.Header, pool packet.Pool, shieldID int32, clientDecode map[uint32]struct{}, payload []byte) (err error) {
 	ctx := NewContext()
+	srv := s.Server()
 
 	if len(clientDecode) == 0 {
-		s.Processor().ProcessClientEncoded(ctx, &payload)
+		proc.ProcessClientEncoded(ctx, &payload)
 		if !ctx.Cancelled() {
-			return s.Server().Write(payload)
+			return srv.Write(payload)
 		}
 		return
 	}
 
-	buf := bytes.NewBuffer(payload)
-	if err := header.Read(buf); err != nil {
+	packetID, n := decodeVaruint32(payload)
+	if n == 0 {
 		return errors.New("failed to decode header")
 	}
 
-	if _, needsDecode := clientDecode[header.PacketID]; !needsDecode {
-		s.Processor().ProcessClientEncoded(ctx, &payload)
+	if _, needsDecode := clientDecode[packetID]; !needsDecode {
+		proc.ProcessClientEncoded(ctx, &payload)
 		if !ctx.Cancelled() {
-			return s.Server().Write(payload)
+			return srv.Write(payload)
 		}
 		return
 	}
 
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic while decoding packet %v: %v", header.PacketID, r)
+			err = fmt.Errorf("panic while decoding packet %v: %v", packetID, r)
 		}
 	}()
 
-	factory, ok := pool[header.PacketID]
+	factory, ok := pool[packetID]
 	if !ok {
-		return fmt.Errorf("unknown packet %d", header.PacketID)
+		return fmt.Errorf("unknown packet %d", packetID)
 	}
 
+	header.PacketID = packetID
 	pk := factory()
-	pk.Marshal(s.client.Proto().NewReader(buf, shieldID, true))
+	pk.Marshal(s.client.Proto().NewReader(bytes.NewBuffer(payload[n:]), shieldID, true))
 	if s.opts.SyncProtocol {
-		s.Processor().ProcessClient(ctx, &pk)
+		proc.ProcessClient(ctx, &pk)
 		if ctx.Cancelled() {
 			return
 		}
-		return s.Server().WritePacket(pk)
+		return srv.WritePacket(pk)
 	}
 
 	for _, latest := range s.client.Proto().ConvertToLatest(pk, s.client) {
-		s.Processor().ProcessClient(ctx, &latest)
+		proc.ProcessClient(ctx, &latest)
 		if ctx.Cancelled() {
 			break
 		}
 
-		if err := s.Server().WritePacket(latest); err != nil {
+		if err := srv.WritePacket(latest); err != nil {
 			return err
 		}
 	}
 	return
+}
+
+// decodeVaruint32 decodes a variable-length encoded uint32 directly from a byte slice.
+// Returns the decoded value and the number of bytes consumed. Returns 0, 0 on error.
+func decodeVaruint32(data []byte) (uint32, int) {
+	var val uint32
+	for i := 0; i < len(data) && i < 5; i++ {
+		val |= uint32(data[i]&0x7F) << (uint(i) * 7)
+		if data[i] < 0x80 {
+			return val, i + 1
+		}
+	}
+	return 0, 0
 }
 
 func logError(s *Session, msg string, err error) {
