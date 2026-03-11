@@ -35,6 +35,13 @@ var headerPool = sync.Pool{
 	},
 }
 
+// DisconnectError is returned when the server explicitly disconnects during the handshake.
+type DisconnectError struct {
+	Message string
+}
+func (e *DisconnectError) Error() string {
+	return e.Message
+}
 // Conn represents a connection to a server, managing packet reading and writing
 // over an underlying io.ReadWriteCloser.
 type Conn struct {
@@ -320,6 +327,10 @@ func (c *Conn) expect(ids ...uint32) {
 
 // handlePacket handles an expected packet that was received before the connection sequence finalization.
 func (c *Conn) handlePacket(p packet.Packet) (err error) {
+	if dp, ok := p.(*packet.Disconnect); ok {
+		return &DisconnectError{Message: dp.Message}
+	}
+
 	var pks []packet.Packet
 	if c.syncProtocol {
 		pks = c.protocol.ConvertToLatest(p, c.client)

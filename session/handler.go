@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	spectrumsrv "github.com/cooldogedev/spectrum/server"
 	spectrumpacket "github.com/cooldogedev/spectrum/server/packet"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
@@ -28,6 +29,12 @@ loop:
 		if err != nil {
 			if server != s.Server() {
 				continue loop
+			}
+
+			var disconnectErr *spectrumsrv.DisconnectError
+			if errors.As(err, &disconnectErr) {
+				s.CloseWithError(disconnectErr)
+				break loop
 			}
 
 			server.CloseWithError(fmt.Errorf("failed to read packet from server: %w", err))
@@ -59,6 +66,9 @@ loop:
 			}
 		case *spectrumpacket.UpdateCache:
 			s.SetCache(pk.Cache)
+		case *packet.Disconnect:
+			s.Disconnect(pk.Message)
+			break loop
 		case packet.Packet:
 			if err := handleServerPacket(s, pk); err != nil {
 				s.CloseWithError(fmt.Errorf("failed to write packet to client: %w", err))
