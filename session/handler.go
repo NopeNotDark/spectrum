@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	spectrumsrv "github.com/cooldogedev/spectrum/server"
@@ -103,6 +102,11 @@ func handleClient(s *Session) {
 		}
 	}
 
+	clientDecode := make(map[uint32]struct{}, len(s.opts.ClientDecode))
+	for _, id := range s.opts.ClientDecode {
+		clientDecode[id] = struct{}{}
+	}
+
 loop:
 	for {
 		select {
@@ -119,7 +123,7 @@ loop:
 			break loop
 		}
 
-		if err := handleClientPacket(s, header, pool, shieldID, payload); err != nil {
+		if err := handleClientPacket(s, header, pool, shieldID, clientDecode, payload); err != nil {
 			s.Server().CloseWithError(fmt.Errorf("failed to write packet to server: %w", err))
 		}
 	}
@@ -164,14 +168,23 @@ func handleServerPacket(s *Session, pk packet.Packet) (err error) {
 }
 
 // handleClientPacket processes and forwards the provided packet from the client to the server.
-func handleClientPacket(s *Session, header *packet.Header, pool packet.Pool, shieldID int32, payload []byte) (err error) {
+func handleClientPacket(s *Session, header *packet.Header, pool packet.Pool, shieldID int32, clientDecode map[uint32]struct{}, payload []byte) (err error) {
 	ctx := NewContext()
+
+	if len(clientDecode) == 0 {
+		s.Processor().ProcessClientEncoded(ctx, &payload)
+		if !ctx.Cancelled() {
+			return s.Server().Write(payload)
+		}
+		return
+	}
+
 	buf := bytes.NewBuffer(payload)
 	if err := header.Read(buf); err != nil {
 		return errors.New("failed to decode header")
 	}
 
-	if !slices.Contains(s.opts.ClientDecode, header.PacketID) {
+	if _, needsDecode := clientDecode[header.PacketID]; !needsDecode {
 		s.Processor().ProcessClientEncoded(ctx, &payload)
 		if !ctx.Cancelled() {
 			return s.Server().Write(payload)

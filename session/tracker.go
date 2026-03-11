@@ -101,7 +101,7 @@ func (t *tracker) clearEntities(s *Session) {
 }
 
 func (t *tracker) clearPlayers(s *Session) {
-	entries := make([]protocol.PlayerListEntry, 0)
+	entries := make([]protocol.PlayerListEntry, 0, t.players.Size())
 	t.players.Each(func(i [16]byte) bool {
 		entries = append(entries, protocol.PlayerListEntry{
 			UUID: i,

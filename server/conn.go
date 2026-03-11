@@ -25,7 +25,7 @@ const (
 
 var bufferPool = sync.Pool{
 	New: func() any {
-		return bytes.NewBuffer(make([]byte, 0, 256))
+		return bytes.NewBuffer(make([]byte, 0, 4096))
 	},
 }
 
@@ -281,6 +281,10 @@ func (c *Conn) read() (pk any, err error) {
 		return nil, err
 	}
 
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("received empty packet")
+	}
+
 	if payload[0] != packetDecodeNeeded && payload[0] != packetDecodeNotNeeded {
 		return nil, fmt.Errorf("unknown decode byte marker %v", payload[0])
 	}
@@ -424,6 +428,7 @@ func (c *Conn) handleItemRegistry(pk *packet.ItemRegistry) error {
 	for _, item := range pk.Items {
 		if item.Name == "minecraft:shield" {
 			c.shieldID = int32(item.RuntimeID)
+			break
 		}
 	}
 

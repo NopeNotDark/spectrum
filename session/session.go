@@ -38,6 +38,7 @@ type Session struct {
 	transport transport.Transport
 
 	animation animation.Animation
+	animationMu sync.RWMutex
 	tracker   *tracker
 
 	processor   Processor
@@ -46,6 +47,7 @@ type Session struct {
 	cache      atomic.Value
 	latency    atomic.Int64
 	inFallback atomic.Bool
+	transferring atomic.Bool
 	once       sync.Once
 }
 
@@ -152,42 +154,51 @@ func (s *Session) TransferTimeout(addr string, duration time.Duration) (err erro
 // occurs at a time, returning an error if another transfer is already in progress.
 // The process is performed using the provided context for cancellation.
 func (s *Session) TransferContext(ctx context.Context, addr string) (err error) {
+	if !s.transferring.CompareAndSwap(false, true) {
+		return errors.New("transfer already in progress")
+	}
+
 	s.serverMu.RLock()
 	origin := s.serverAddr
 	s.serverMu.RUnlock()
 	processorCtx := NewContext()
 	s.Processor().ProcessPreTransfer(processorCtx, &origin, &addr)
 	if processorCtx.Cancelled() {
+		s.transferring.Store(false)
 		return errors.New("processor failed")
 	}
 
 	s.sendMetadata(true)
 	conn, err := s.dial(ctx, addr)
 	if err != nil {
+		s.transferring.Store(false)
 		s.Processor().ProcessTransferFailure(NewContext(), &origin, &addr)
 		return fmt.Errorf("dialer failed: %w", err)
 	}
 
 	if err := conn.DoConnect(); err != nil {
+		s.transferring.Store(false)
 		s.Processor().ProcessTransferFailure(NewContext(), &origin, &addr)
 		return fmt.Errorf("connection sequence failed failed: %w", err)
 	}
 
 	conn.OnConnect(func(err error) {
+		defer s.transferring.Store(false)
 		if err != nil {
 			s.Processor().ProcessTransferFailure(NewContext(), &origin, &addr)
 			return
 		}
 
 		gameData := conn.GameData()
-		s.animation.Play(s.client, gameData)
+		anim := s.Animation()
+		anim.Play(s.client, gameData)
 		s.sendGameData(conn.GameData())
 		if err := conn.DoSpawn(); err != nil {
 			s.Processor().ProcessTransferFailure(NewContext(), &origin, &addr)
 			return
 		}
 		s.inFallback.Store(false)
-		s.animation.Clear(s.client, gameData)
+		anim.Clear(s.client, gameData)
 		s.Processor().ProcessPostTransfer(NewContext(), &origin, &addr)
 		s.logger.Debug("transferred session", "origin", origin, "target", addr)
 	})
@@ -196,12 +207,16 @@ func (s *Session) TransferContext(ctx context.Context, addr string) (err error) 
 
 // Animation returns the animation set to be played during server transfers.
 func (s *Session) Animation() animation.Animation {
+	s.animationMu.RLock()
+	defer s.animationMu.RUnlock()
 	return s.animation
 }
 
 // SetAnimation sets the animation to be played during server transfers.
 func (s *Session) SetAnimation(animation animation.Animation) {
+	s.animationMu.Lock()
 	s.animation = animation
+	s.animationMu.Unlock()
 }
 
 // Cache returns the current session cache.

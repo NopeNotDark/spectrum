@@ -50,7 +50,7 @@ func (r *Registry) GetSessions() []*Session {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	sessions := make([]*Session, 0)
+	sessions := make([]*Session, 0, len(r.sessions))
 	for _, session := range r.sessions {
 		sessions = append(sessions, session)
 	}
