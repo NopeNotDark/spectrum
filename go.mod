@@ -28,4 +28,4 @@ require (
 	golang.org/x/text v0.35.0 // indirect
 )
 
-replace github.com/cooldogedev/spectral => github.com/NopeNotDark/spectral v0.0.0-20260311212249-19d72919eb8d
+replace github.com/cooldogedev/spectral => github.com/NopeNotDark/spectral v0.0.0-20260311220412-cbcf7b9ad7a0
